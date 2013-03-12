@@ -65,13 +65,23 @@ require 'pp'
 
         priorities = IssuePriority.all(:order => 'id')
         PRIORITY_MAPPING = {
-          "P5" => priorities[1], # low
-          "P4" => priorities[2], # normal
-          "P3" => priorities[3], # high
+          "P5" => priorities[1], # lowest
+          "P5 (Lowest)" => priorities[1], # lowest
+          "P5 lowest" => priorities[1], # lowest
+          "P4" => priorities[2], # low
+          "P4 (Low)" => priorities[2], # low
+          "P4 low" => priorities[2], # low
+          "P3" => priorities[3], # normal
+          "P3 (Normal)" => priorities[3], # normal
+          "P3 normal" => priorities[3], # normal
           "P2" => priorities[4], # urgent
-          "P1" => priorities[5]  # immediate
+          "P2 (High)" => priorities[4], # urgent
+          "P2 high" => priorities[4], # urgent
+          "P1" => priorities[5],  # immediate
+          "P1 (Highest)" => priorities[5],  # immediate
+          "P1 highest" => priorities[5]  # immediate
         }
-        DEFAULT_PRIORITY = PRIORITY_MAPPING["P2"]
+        DEFAULT_PRIORITY = PRIORITY_MAPPING["P3"]
 
         TRACKER_BUG = Tracker.find_by_position(1)
         TRACKER_FEATURE = Tracker.find_by_position(2)
