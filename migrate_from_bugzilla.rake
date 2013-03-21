@@ -265,6 +265,30 @@ require 'pp'
            return @user_map[userid]
         end
 
+        # create the new user with its own fresh pk
+        def self.create_and_save_redmine_user(profile)
+          user = User.new
+          user.login = profile.login
+          user.password = "bugzilla"
+          user.firstname = profile.firstname
+          user.lastname = profile.lastname
+          user.mail = profile.email
+          user.mail.strip!
+          user.status = User::STATUS_LOCKED if !profile.disabledtext.empty?
+          user.admin = true if profile.groups.include?(BugzillaGroup.find_by_name("admin"))
+          unless user.save then
+            puts "FAILURE saving user"
+            puts "user: #{user.inspect}"
+            puts "bugzilla profile: #{profile.inspect}"
+            validation_errors = user.errors.collect { |e| e.to_s }.join(", ")
+            puts "validation errors: #{validation_errors}"
+          end
+          if @verbose_mode
+            puts "New user created: #{user.inspect}"
+          end
+          return user
+        end
+
         def self.migrate_users
           puts
           print "Migrating profiles\n"
@@ -279,30 +303,20 @@ require 'pp'
           BugzillaProfile.all(:order => :userid).each do |profile|
             profile_email = profile.email
             profile_email.strip!
-            existing_redmine_user = User.find_by_mail(profile_email)
-            if existing_redmine_user
-              @user_map[profile.userid] = existing_redmine_user.id
-            else
-              # create the new user with its own fresh pk
-              # and make an entry in the mapping
-              user = User.new
-              user.login = profile.login
-              user.password = "bugzilla"
-              user.firstname = profile.firstname
-              user.lastname = profile.lastname
-              user.mail = profile.email
-              user.mail.strip!
-              user.status = User::STATUS_LOCKED if !profile.disabledtext.empty?
-              user.admin = true if profile.groups.include?(BugzillaGroup.find_by_name("admin"))
-      	      unless user.save then
-                puts "FAILURE saving user"
-                puts "user: #{user.inspect}"
-                puts "bugzilla profile: #{profile.inspect}"
-                validation_errors = user.errors.collect {|e| e.to_s }.join(", ")
-                puts "validation errors: #{validation_errors}"
+            user = User.find_by_mail(profile_email)
+            if user.nil?
+              if @interactive_mode
+                print "#{profile.firstname} #{profile.lastname} [#{profile_email}]: "
+                value = STDIN.gets.chomp!
+                profile_email = value unless value.blank?
+                user = User.find_by_mail(profile_email)
+                user = create_and_save_redmine_user(profile) if user.nil?
+              else
+                user = create_and_save_redmine_user(profile)
               end
-              @user_map[profile.userid] = user.id
             end
+            # and make an entry in the mapping
+            @user_map[profile.userid] = user.id
           end
           print '.'
           $stdout.flush
@@ -317,12 +331,22 @@ require 'pp'
           @category_map = {}
 
           BugzillaProduct.find_each do |product|
-            project = Project.new
-            project.name = product.name
-            project.description = product.description
-            project.identifier = "#{product.name.downcase.gsub(/[^a-z0-9]+/, '-')[0..10]}-#{product.id}"
-            project.save!
-
+            if @interactive_mode
+              print "Migrate product: #{product.name} ? [y/N] "
+              next unless STDIN.gets.match(/^y$/i)
+              print "Create new project ? [y/N] "
+              if STDIN.gets.match(/^y$/i)
+                project = create_and_save_redmine_project(product)
+              else
+                while project.nil?
+                  print "Enter the id of the project : "
+                  project_id = STDIN.gets.chomp!
+                  project = Project.find(project_id)
+                end
+              end
+            else
+              project = create_and_save_redmine_project(product)
+            end
             @project_map[product.id] = project.id
 
             print '.'
@@ -345,15 +369,29 @@ require 'pp'
               @category_map[component.id] = category.id
             end
 
-            User.find_each do |user|
-              membership = Member.new(
-                :user => user,
-                :project => project
-              )
-              membership.roles << DEFAULT_ROLE
-              membership.save
+            unless @interactive_mode then
+              User.find_each do |user|
+                membership = Member.new(
+                  :user => user,
+                  :project => project
+                )
+                membership.roles << DEFAULT_ROLE
+                membership.save
+              end
             end
           end
+        end
+
+        def self.create_and_save_redmine_project(product)
+          project = Project.new
+          project.name = product.name
+          project.description = product.description
+          project.identifier = "#{product.name.downcase.gsub(/[^a-z0-9]+/, '-')[0..10]}-#{product.id}"
+          project.save!
+          if @verbose_mode
+            puts "New project created: #{project.inspect}"
+          end
+          project
         end
 
         def self.migrate_issues()
@@ -367,6 +405,7 @@ require 'pp'
 
           BugzillaBug.find(:all, :order => "bug_id ASC").each  do |bug|
             #puts "Processing bugzilla bug #{bug.bug_id}"
+            next if @project_map[bug.product_id].nil?
             description = bug.descriptions.first.text.to_s
 
             issue = Issue.new(
@@ -433,7 +472,7 @@ require 'pp'
           puts
           print "Migrating attachments"
           BugzillaAttachment.find_each() do |attachment|
-            next if attachment.attach_data.nil?
+            next if attachment.attach_data.nil? or @issue_map[attachment.bug_id].nil?
             a = Attachment.new :created_on => attachment.creation_ts
             a.file = attachment
             a.author = User.find(map_user(attachment.submitter_id)) || User.first
@@ -497,8 +536,16 @@ require 'pp'
         print "Are you sure you want to continue ? [y/N] "
         break unless STDIN.gets.match(/^y$/i)
 
+        puts
+        print "Do you want to use the interactive mode ? [y/N] "
+        @interactive_mode = STDIN.gets.match(/^y$/i)
+
+        puts
+        print "Verbose ? [y/N] "
+        @verbose_mode = STDIN.gets.match(/^y$/i)
+
         # Default Bugzilla database settings
-        db_params = {:adapter => 'mysql',
+        db_params = {:adapter => 'mysql2',
           :database => 'bugs',
           :host => 'localhost',
           :port => 3306,
@@ -529,6 +576,10 @@ require 'pp'
         BugzillaMigrate.migrate_issues
         BugzillaMigrate.migrate_attachments
         BugzillaMigrate.migrate_issue_relations
+
+        puts
+        puts
+        puts "Success !"
       end
     end
   end
